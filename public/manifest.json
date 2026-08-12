@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "WebNote",
+  "version": "0.0.1",
+  "description": "Write notes directly on web pages.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ]
+}
