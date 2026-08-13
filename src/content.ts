@@ -3,7 +3,7 @@ import {
   hideHighlight,
   showHighlight,
 } from './highlight/highlight'
-
+import { createNote } from './note/createNote'
 
 console.log('WebNote content script loaded!')
 
@@ -131,46 +131,14 @@ document.addEventListener('click', (event) => {
   // 当前一个 anchor 暂时只允许创建一条笔记。
   if (anchor.dataset.webnoteAnchorId) return
 
-  /**
-   * 为这一组 anchor ↔ note 关系生成唯一 ID。
-   */
-  const anchorId = crypto.randomUUID()
-
   console.log('WebNote clicked:', target)
   console.log('WebNote anchor:', anchor)
-  console.log('WebNote anchor ID:', anchorId)
 
-  // 创建当前最简单的笔记编辑框。
-  const noteBox = document.createElement('textarea')
+  // 具体怎样创建笔记，由 note 模块负责。
+  // content.ts 这里只负责确定“什么时候、给谁创建笔记”。
+  createNote(anchor)
 
-  // 标记这是 WebNote 自己创建的 DOM。
-  noteBox.dataset.webnote = 'true'
 
-  // 保存这条笔记对应的 anchor ID。
-  noteBox.dataset.webnoteAnchorId = anchorId
-
-  noteBox.placeholder = '📝 写点笔记...'
-
-  // 当前仍使用临时内联样式。
-  // 后续会拆成真正独立的 WebNote UI。
-  noteBox.style.display = 'block'
-  noteBox.style.width = '100%'
-  noteBox.style.minHeight = '100px'
-  noteBox.style.margin = '12px 0'
-  noteBox.style.padding = '12px'
-  noteBox.style.boxSizing = 'border-box'
-  noteBox.style.border = '1px solid #ccc'
-  noteBox.style.borderRadius = '8px'
-  noteBox.style.background = '#fff'
-  noteBox.style.color = '#111'
-  noteBox.style.fontSize = '14px'
-  noteBox.style.fontFamily = 'sans-serif'
-
-  // 在原网页 anchor 上记录同一个 ID。
-  anchor.dataset.webnoteAnchorId = anchorId
-
-  // 将笔记插入 anchor 之后。
-  anchor.insertAdjacentElement('afterend', noteBox)
 
   // 创建完成后隐藏当前 hover 高亮。
   hideHighlight()
