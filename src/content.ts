@@ -1,55 +1,213 @@
+// src/content.ts
+
 import {
   createAnchorFingerprint,
   findAnchor,
   findAnchorFromFingerprint,
 } from './anchor/findAnchor'
+
 import {
   hideHighlight,
   showHighlight,
 } from './highlight/highlight'
-import { createNote } from './note/createNote'
+
+import {
+  createNote,
+} from './note/createNote'
+
 import {
   deleteNote,
   getNotesForPage,
   saveNote,
 } from './storage/noteStorage'
 
-import type { StoredNote } from './types/note'
+import type {
+  StoredNote,
+} from './types/note'
 
-import {exportCurrentPageMarkdown,} from './export/exportPageNotes'
-
-console.log('WebNote content script loaded!')
+import {
+  exportCurrentPageMarkdown,
+} from './export/exportPageNotes'
 
 /**
- * 当前 WebNote 认为正在处理的页面 URL。
+ * WebNote 当前是否处于“选取笔记位置”模式。
  *
- * SPA 路由切换时 content script 本身不会重新加载，
- * 所以需要自己判断 location.href 是否已经变化。
+ * 默认关闭，只有点击扩展图标后才会开启。
+ */
+let isActive = false
+
+/**
+ * 当前鼠标悬停时识别出的 anchor。
+ *
+ * 点击页面时会优先使用这个 anchor 创建笔记。
+ */
+let hoveredAnchor: HTMLElement | null = null
+
+/**
+ * WebNote 当前认为自己所在的页面 URL。
+ *
+ * SPA 切换页面时 content script 本身不会重新加载，
+ * 因此需要自己记录并判断 URL 是否变化。
  */
 let currentPageUrl = location.href
 
 /**
  * restoreNotes() 的 debounce timer。
  *
- * 动态网页一次渲染可能连续产生大量 DOM mutation，
- * 我们不希望每个 mutation 都执行一次笔记恢复。
+ * 动态网页经常一次产生很多 DOM 变化，
+ * 不应该每发生一次 mutation 就立即恢复笔记。
  */
 let restoreTimer: number | undefined
 
 /**
- * 清理当前页面中 WebNote 已经渲染出来的运行时 UI 和标记。
+ * ------------------------------
+ * Note Restore
+ * ------------------------------
+ */
+
+/**
+ * 恢复当前 URL 已经保存的全部笔记。
+ */
+async function restoreNotes(): Promise<void> {
+  const notes =
+    await getNotesForPage(location.href)
+
+  for (const note of notes) {
+    /**
+     * 根据保存的 fingerprint，
+     * 在当前页面中重新寻找对应 anchor。
+     */
+    const anchor =
+      findAnchorFromFingerprint(
+        note.anchor,
+      )
+
+    if (!anchor) {
+      /**
+       * 动态网页可能还没有渲染完。
+       *
+       * MutationObserver 后续会再次触发恢复，
+       * 所以这里不用立即认为数据已经失效。
+       */
+      console.warn(
+        'WebNote could not restore anchor:',
+        note,
+      )
+
+      continue
+    }
+
+    /**
+     * 如果当前 anchor 已经挂有 WebNote，
+     * 说明这条笔记已经恢复过了。
+     *
+     * 避免 MutationObserver 多次恢复造成重复 Note。
+     */
+    if (
+      anchor.dataset.webnoteAnchorId
+    ) {
+      continue
+    }
+
+    /**
+     * 将保存的数据重新渲染成 Note UI。
+     */
+    createNote(anchor, {
+      id: note.id,
+
+      initialContent:
+        note.content,
+
+      onChange: async (
+        noteId,
+        content,
+      ) => {
+        await saveNote({
+          ...note,
+          id: noteId,
+          content,
+        })
+      },
+
+      onDelete: async (noteId) => {
+        await deleteNote(
+          location.href,
+          noteId,
+        )
+      },
+    })
+  }
+}
+
+/**
+ * 延迟执行一次笔记恢复。
+ *
+ * 如果短时间内连续发生很多 DOM mutation，
+ * 只保留最后一次 restore。
+ */
+function scheduleRestore(): void {
+  if (
+    restoreTimer !== undefined
+  ) {
+    window.clearTimeout(
+      restoreTimer,
+    )
+  }
+
+  restoreTimer =
+    window.setTimeout(() => {
+      /**
+       * Timer 已经开始执行，
+       * 状态恢复为“当前没有待执行 restore”。
+       */
+      restoreTimer = undefined
+
+      void restoreNotes()
+    }, 300)
+}
+
+/**
+ * ------------------------------
+ * Runtime UI Cleanup
+ * ------------------------------
+ */
+
+/**
+ * 清理当前页面已经渲染出来的 WebNote UI。
  *
  * 注意：
- * 这里只删除 DOM 中的 Note UI 和 anchor 标记，
- * 不删除 chrome.storage.local 中真正保存的笔记数据。
+ * 这里只清理 DOM 中的运行时状态，
+ * 不删除 chrome.storage.local 中真正保存的数据。
+ *
+ * 它会被两个场景复用：
+ *
+ * 1. SPA 从 A 页面切换到 B 页面
+ * 2. 用户主动清理当前页 / 当前网站笔记
  */
 function clearRenderedNotes(): void {
   /**
-   * 删除 WebNote Note Host。
+   * 取消旧页面还没有执行的 restore。
    *
-   * Note UI 本身现在位于 Shadow DOM 中，
-   * 但 Shadow Host 仍然是普通 DOM 元素，
-   * 所以可以直接从 document 中找到。
+   * 否则可能：
+   *
+   * A 页面离开
+   * → A 的 restoreTimer 随后执行
+   * → 在 B 页面错误恢复。
+   */
+  if (
+    restoreTimer !== undefined
+  ) {
+    window.clearTimeout(
+      restoreTimer,
+    )
+
+    restoreTimer = undefined
+  }
+
+  /**
+   * 删除所有 WebNote Note Host。
+   *
+   * Shadow DOM 会随着 Host 一起被删除。
    */
   document
     .querySelectorAll<HTMLElement>(
@@ -60,178 +218,458 @@ function clearRenderedNotes(): void {
     })
 
   /**
-   * 清掉原网页 anchor 上的运行时关联 ID。
-   *
-   * 如果不清理，
-   * restoreNotes() 会认为这些 anchor 已经恢复过。
+   * 清除原网页 anchor 上保存的运行时关联 ID。
    */
   document
     .querySelectorAll<HTMLElement>(
       '[data-webnote-anchor-id]',
     )
     .forEach((anchor) => {
-      delete anchor.dataset.webnoteAnchorId
+      delete anchor.dataset
+        .webnoteAnchorId
     })
 
-  // 页面切换时顺便隐藏旧的高亮。
+  hoveredAnchor = null
+
   hideHighlight()
 }
 
 /**
- * 延迟执行一次恢复。
- *
- * 动态页面经常连续修改 DOM，
- * 因此等待短暂稳定后再寻找 anchor。
+ * ------------------------------
+ * SPA URL Lifecycle
+ * ------------------------------
  */
-function scheduleRestore(): void {
-  if (restoreTimer !== undefined) {
-    window.clearTimeout(restoreTimer)
-  }
-
-  restoreTimer = window.setTimeout(() => {
-    void restoreNotes()
-  }, 300)
-}
 
 /**
- * 检查当前 URL 是否发生变化。
+ * 当 SPA URL 真正发生变化时执行。
  *
- * 对传统整页导航来说 content script 会重新加载；
- * 这个逻辑主要是处理 React / Next.js 等 SPA 路由。
+ * 职责非常明确：
+ *
+ * 1. 判断 URL 是否变化
+ * 2. 清理上一页运行时 UI
+ * 3. 更新当前 URL
+ * 4. 为新页面安排笔记恢复
  */
-function checkPageChange(): void {
+function handlePageUrlChange(): void {
   const newUrl = location.href
 
-  // URL 没变，只说明当前页面 DOM 可能更新了。
-  if (newUrl === currentPageUrl) {
-    scheduleRestore()
+  if (
+    newUrl === currentPageUrl
+  ) {
     return
   }
 
   /**
-   * SPA 已经切换到了另一个 URL。
+   * 先清理上一页的 Note UI。
+   *
+   * chrome.storage.local 数据仍然保留。
+   */
+  clearRenderedNotes()
+
+  /**
+   * WebNote 从现在开始认为自己已经进入新页面。
    */
   currentPageUrl = newUrl
 
-  // 清理上一页面的运行时 DOM 状态。
-  clearRenderedNotes()
-
-  // 等新页面内容渲染后重新恢复当前 URL 的笔记。
+  /**
+   * SPA 新页面内容通常不是瞬间全部完成，
+   * 因此继续使用 debounce restore。
+   *
+   * 如果正文随后继续异步加载，
+   * MutationObserver 还会再次安排恢复。
+   */
   scheduleRestore()
 }
 
 /**
- * 监听动态网页 DOM 变化。
+ * SPA 通常通过：
  *
- * 这同时解决两个问题：
+ * history.pushState()
+ * history.replaceState()
  *
- * 1. 首次刷新时正文异步加载较晚
- * 2. SPA 路由切换后新页面重新渲染
+ * 修改浏览器 URL。
+ *
+ * 这两种调用本身不会触发 popstate，
+ * 因此 WebNote 主动包装它们。
  */
-const pageObserver = new MutationObserver(() => {
-  checkPageChange()
-})
+const originalPushState =
+  history.pushState
 
-pageObserver.observe(document.documentElement, {
-  childList: true,
-  subtree: true,
-})
+const originalReplaceState =
+  history.replaceState
+
+history.pushState = function (
+  ...args: Parameters<
+    History['pushState']
+  >
+): void {
+  originalPushState.apply(
+    history,
+    args,
+  )
+
+  handlePageUrlChange()
+}
+
+history.replaceState =
+  function (
+    ...args: Parameters<
+      History['replaceState']
+    >
+  ): void {
+    originalReplaceState.apply(
+      history,
+      args,
+    )
+
+    handlePageUrlChange()
+  }
 
 /**
- * 浏览器前进 / 后退时会触发 popstate。
- *
- * MutationObserver 通常也会捕获随后的 DOM 变化，
- * 这里额外监听一次，让页面切换响应更直接。
+ * 浏览器前进 / 后退会触发 popstate。
  */
-window.addEventListener('popstate', () => {
-  checkPageChange()
-})
+window.addEventListener(
+  'popstate',
+  () => {
+    handlePageUrlChange()
+  },
+)
 
 /**
- * 首次进入页面时主动恢复一次。
- *
- * 即使第一次正文还没有加载完成，
- * 后面的 MutationObserver 仍会再次触发恢复。
+ * ------------------------------
+ * Mutation Observer
+ * ------------------------------
  */
-scheduleRestore()
-
-
-// WebNote 默认关闭。
-// 只有用户点击浏览器工具栏图标后，才进入选择模式。
-let isActive = false
-
 
 /**
- * 根据 WebNote 保存的 anchor ID，
- * 找回与某条笔记对应的原网页元素。
+ * 判断一个 DOM 节点是否属于
+ * WebNote 自己插入的 Note Host。
  */
-function findAnchorById(anchorId: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(
-    `[data-webnote-anchor-id="${anchorId}"]`,
+function isWebNoteNode(
+  node: Node,
+): boolean {
+  if (
+    !(node instanceof HTMLElement)
+  ) {
+    return false
+  }
+
+  return node.matches(
+    '[data-webnote="true"]',
   )
 }
 
 /**
- * 接收来自 background.ts 的命令。
+ * 判断一次 DOM mutation
+ * 是否只是 WebNote 自己引起的。
  *
- * 当前支持：
- *
- * WEBNOTE_TOGGLE
- * → 切换笔记选择模式
- *
- * WEBNOTE_PREVIEW_REQUEST
- * → 生成当前页面完整 Markdown 并打开预览
+ * 创建或删除 Note Host 时，
+ * 不应该因此重新 restoreNotes()。
  */
-chrome.runtime.onMessage.addListener((message) => {
-  /**
-   * ------------------------------
-   * WebNote ON / OFF
-   * ------------------------------
-   */
-  if (message.type === 'WEBNOTE_TOGGLE') {
-    isActive = !isActive
+function isWebNoteMutation(
+  mutation: MutationRecord,
+): boolean {
+  const changedNodes = [
+    ...mutation.addedNodes,
+    ...mutation.removedNodes,
+  ]
 
-    console.log(
-      `WebNote is now ${isActive ? 'ON' : 'OFF'}`,
-    )
-
-    if (!isActive) {
-      hideHighlight()
-    }
-
-    return
+  if (
+    changedNodes.length === 0
+  ) {
+    return false
   }
 
-  /**
-   * ------------------------------
-   * Markdown Preview
-   * ------------------------------
-   */
-  if (message.type === 'WEBNOTE_PREVIEW_REQUEST') {
-    /**
-     * 导出过程需要读取 storage 和当前 DOM，
-     * 因此是异步操作。
-     */
-    void preparePreview()
-  }
-})
+  return changedNodes.every(
+    isWebNoteNode,
+  )
+}
 
 /**
- * 为当前网页生成最终 Markdown，
- * 再交给 background 打开预览页面。
+ * MutationObserver 不再负责猜测 URL 是否变化。
+ *
+ * 它现在只负责一件事：
+ *
+ * “宿主网页 DOM 发生真实变化后，
+ *  再尝试恢复一次笔记。”
+ *
+ * 这样可以处理 React / Next.js 页面正文异步加载。
  */
-async function preparePreview(): Promise<void> {
+const pageObserver =
+  new MutationObserver(
+    (mutations) => {
+      const onlyWebNoteChanges =
+        mutations.every(
+          isWebNoteMutation,
+        )
+
+      if (
+        onlyWebNoteChanges
+      ) {
+        return
+      }
+
+      scheduleRestore()
+    },
+  )
+
+pageObserver.observe(
+  document.documentElement,
+  {
+    childList: true,
+    subtree: true,
+  },
+)
+
+/**
+ * ------------------------------
+ * Mouse Hover
+ * ------------------------------
+ */
+
+/**
+ * WebNote 开启后，
+ * 根据鼠标所在 DOM 元素寻找候选 anchor。
+ */
+document.addEventListener(
+  'mouseover',
+  (event) => {
+    if (!isActive) return
+
+    if (
+      !(event.target instanceof HTMLElement)
+    ) {
+      return
+    }
+
+    const target = event.target
+
+    /**
+     * 鼠标位于 WebNote Note UI 上时，
+     * 不应该重新进行 anchor 选择。
+     */
+    const noteHost =
+      target.closest<HTMLElement>(
+        '[data-webnote="true"]',
+      )
+
+    if (noteHost) {
+      const noteId =
+        noteHost.dataset
+          .webnoteAnchorId
+
+      if (!noteId) return
+
+      /**
+       * Note Hover 时柔和高亮
+       * 它所对应的原文 anchor。
+       */
+      const anchor =
+        document.querySelector<HTMLElement>(
+          `[data-webnote-anchor-id="${CSS.escape(
+            noteId,
+          )}"]:not([data-webnote="true"])`,
+        )
+
+      if (anchor) {
+        showHighlight(
+          anchor,
+          true,
+        )
+      }
+
+      return
+    }
+
+    const anchor =
+      findAnchor(target)
+
+    if (!anchor) {
+      hoveredAnchor = null
+
+      hideHighlight()
+
+      return
+    }
+
+    hoveredAnchor = anchor
+
+    showHighlight(anchor)
+  },
+)
+
+/**
+ * 鼠标离开 WebNote Note Host 后，
+ * 关闭对应的柔和高亮。
+ */
+document.addEventListener(
+  'mouseout',
+  (event) => {
+    if (
+      !(event.target instanceof HTMLElement)
+    ) {
+      return
+    }
+
+    if (
+      event.target.closest(
+        '[data-webnote="true"]',
+      )
+    ) {
+      hideHighlight()
+    }
+  },
+)
+
+/**
+ * ------------------------------
+ * Create Note
+ * ------------------------------
+ */
+
+/**
+ * WebNote 开启状态下点击页面，
+ * 在当前 anchor 后创建一条笔记。
+ */
+document.addEventListener(
+  'click',
+  (event) => {
+    if (!isActive) return
+
+    if (
+      !(event.target instanceof HTMLElement)
+    ) {
+      return
+    }
+
+    const target = event.target
+
+    /**
+     * 用户操作 WebNote 自己的 textarea / button 时，
+     * 不应该创建新的 Note，
+     * 也不能 preventDefault()。
+     */
+    if (
+      target.closest(
+        '[data-webnote="true"]',
+      )
+    ) {
+      return
+    }
+
+    /**
+     * WebNote ON 时，
+     * 当前点击用于创建笔记，
+     * 因此阻止链接等元素原来的默认行为。
+     */
+    event.preventDefault()
+
+    const anchor =
+      hoveredAnchor ??
+      findAnchor(target)
+
+    if (!anchor) {
+      return
+    }
+
+    /**
+     * 一个 anchor 当前只允许存在一条 Note。
+     */
+    if (
+      anchor.dataset
+        .webnoteAnchorId
+    ) {
+      return
+    }
+
+    const noteId =
+      crypto.randomUUID()
+
+    const anchorFingerprint =
+      createAnchorFingerprint(
+        anchor,
+      )
+
+    /**
+     * 新笔记的初始持久化数据。
+     */
+    const note: StoredNote = {
+      id: noteId,
+
+      url: location.href,
+
+      anchor:
+        anchorFingerprint,
+
+      content: '',
+    }
+
+    const noteElement =
+      createNote(anchor, {
+        id: noteId,
+
+        onChange: async (
+          id,
+          content,
+        ) => {
+          await saveNote({
+            ...note,
+            id,
+            content,
+          })
+        },
+
+        onDelete: async (
+          id,
+        ) => {
+          await deleteNote(
+            location.href,
+            id,
+          )
+        },
+      })
+
+    /**
+     * createNote() 中 textarea 位于 Shadow DOM，
+     * 因此需要通过 shadowRoot 找到它。
+     */
+    noteElement.shadowRoot
+      ?.querySelector<HTMLTextAreaElement>(
+        'textarea',
+      )
+      ?.focus()
+
+    /**
+     * 新 Note 即使还是空内容，
+     * 也先保存下来，
+     * 后续输入会通过 onChange 更新。
+     */
+    void saveNote(note)
+
+    hoveredAnchor = null
+
+    hideHighlight()
+  },
+)
+
+/**
+ * ------------------------------
+ * Preview
+ * ------------------------------
+ */
+
+/**
+ * 为当前页面生成最终 Markdown，
+ * 再交给 background 打开 Preview 页面。
+ */
+async function preparePreview():
+  Promise<void> {
   const markdown =
     await exportCurrentPageMarkdown()
 
-  /**
-   * 将最终结果交给 background。
-   *
-   * 注意这里传的是已经合并好的最终 Markdown，
-   * preview 页面不再重新参与任何笔记排序或转换。
-   */
   await chrome.runtime.sendMessage({
-    type: 'WEBNOTE_OPEN_PREVIEW',
+    type:
+      'WEBNOTE_OPEN_PREVIEW',
 
     payload: {
       title: document.title,
@@ -242,194 +680,153 @@ async function preparePreview(): Promise<void> {
 }
 
 /**
- * 鼠标移动时预览当前 anchor。
+ * ------------------------------
+ * Background Messages
+ * ------------------------------
  */
-document.addEventListener('mousemove', (event) => {
-  /**
-   * WebNote 没开启时直接退出。
-   *
-   * 这是整个开关机制最重要的一层：
-   * OFF 状态下，我们完全不处理网页的 mousemove。
-   */
-  if (!isActive) return
 
-  if (!(event.target instanceof HTMLElement)) return
-
-  const target = event.target
-
-  // 判断鼠标是否位于 WebNote 自己创建的 UI 中。
-  const webNoteElement = target.closest<HTMLElement>(
-    '[data-webnote="true"]',
-  )
-
-  if (webNoteElement) {
-    // 如果当前 WebNote UI 关联了某个 anchor，
-    // 就淡淡高亮对应原文。
-    const anchorId = webNoteElement.dataset.webnoteAnchorId
-
-    if (anchorId) {
-      const anchor = findAnchorById(anchorId)
-
-      if (anchor) {
-        showHighlight(anchor, true)
-        return
-      }
-    }
-
-    // 其他 WebNote UI 不显示 anchor。
-    hideHighlight()
-    return
-  }
-
-  const anchor = findAnchor(target)
-
-  if (!anchor) {
-    hideHighlight()
-    return
-  }
-
-  // 用户正在选择网页内容时显示正常强度的高亮。
-  showHighlight(anchor, true)
-})
-
-/**
- * 页面加载完成以后，
- * 从 chrome.storage 中读取这个 URL 保存的笔记，
- * 并尝试重新找到对应 anchor。
- */
-async function restoreNotes(): Promise<void> {
-  const notes = await getNotesForPage(location.href)
-
-  for (const note of notes) {
+chrome.runtime.onMessage.addListener(
+  (message) => {
     /**
-     * 根据之前保存的 anchor fingerprint，
-     * 尝试在当前 DOM 中重新找到原文。
+     * WebNote ON / OFF。
      */
-    const anchor = findAnchorFromFingerprint(note.anchor)
+    if (
+      message.type ===
+      'WEBNOTE_TOGGLE'
+    ) {
+      isActive = !isActive
 
-    // 网页内容可能已经发生变化。
-    // 找不到 anchor 时，这一版暂时跳过。
-    if (!anchor) {
-      console.warn(
-        'WebNote could not restore anchor:',
-        note,
+      console.log(
+        `WebNote is now ${
+          isActive
+            ? 'ON'
+            : 'OFF'
+        }`,
       )
 
-      continue
+      if (!isActive) {
+        hoveredAnchor = null
+
+        hideHighlight()
+      }
+
+      return
     }
 
-    // 防止重复创建同一 anchor 的 Note UI。
-    if (anchor.dataset.webnoteAnchorId) continue
+    /**
+     * 生成当前页 Preview。
+     */
+    if (
+      message.type ===
+      'WEBNOTE_PREVIEW_REQUEST'
+    ) {
+      void preparePreview()
+
+      return
+    }
 
     /**
-     * 恢复已有 Note UI。
+     * ------------------------------
+     * 清理当前页面
+     * ------------------------------
      */
-    createNote(anchor, {
-      id: note.id,
-      initialContent: note.content,
+    if (
+      message.type ===
+      'WEBNOTE_CONFIRM_CLEAR_PAGE'
+    ) {
+      const confirmed =
+        window.confirm(
+          '确定要清理当前页面的全部 WebNote 笔记吗？\n\n此操作无法撤销。',
+        )
 
-      onChange: async (noteId, content) => {
-        await saveNote({
-          ...note,
-          id: noteId,
-          content,
+      if (!confirmed) {
+        return
+      }
+
+      void chrome.runtime
+        .sendMessage({
+          type:
+            'WEBNOTE_CLEAR_PAGE_REQUEST',
+
+          url: location.href,
         })
-      },
+        .catch((error) => {
+          /**
+           * 开发阶段重新加载插件后，
+           * 老 content script 的 extension context
+           * 可能已经失效。
+           */
+          console.debug(
+            'WebNote could not request page cleanup:',
+            error,
+          )
+        })
 
-      onDelete: async (noteId) => {
-        await deleteNote(location.href, noteId)
-      },
-    })
-  }
-}
+      return
+    }
+
+    /**
+     * ------------------------------
+     * 清理当前网站
+     * ------------------------------
+     */
+    if (
+      message.type ===
+      'WEBNOTE_CONFIRM_CLEAR_SITE'
+    ) {
+      const origin =
+        location.origin
+
+      const confirmed =
+        window.confirm(
+          `确定要清理 ${origin} 下保存的全部 WebNote 笔记吗？\n\n这会删除该网站所有已记录页面的笔记，且无法撤销。`,
+        )
+
+      if (!confirmed) {
+        return
+      }
+
+      void chrome.runtime
+        .sendMessage({
+          type:
+            'WEBNOTE_CLEAR_SITE_REQUEST',
+
+          origin,
+        })
+        .catch((error) => {
+          console.debug(
+            'WebNote could not request site cleanup:',
+            error,
+          )
+        })
+
+      return
+    }
+
+    /**
+     * background 已经完成 storage 删除。
+     *
+     * 当前页面立即清理运行时 UI。
+     */
+    if (
+      message.type ===
+      'WEBNOTE_CLEAR_RENDERED_NOTES'
+    ) {
+      clearRenderedNotes()
+
+      return
+    }
+  },
+)
 
 /**
- * 点击网页内容时创建笔记。
- */
-document.addEventListener('click', (event) => {
-  /**
-   * WebNote 关闭时必须立刻退出。
-   *
-   * 特别注意：
-   * event.preventDefault() 必须放在这个判断之后。
-   *
-   * 否则即使 WebNote OFF，
-   * 我们仍然会阻止网页链接跳转。
-   */
-  if (!isActive) return
-
-  if (!(event.target instanceof HTMLElement)) return
-
-  const target = event.target
-
-  // WebNote 自己创建的 UI 不参与创建新 anchor。
-  if (target.closest('[data-webnote="true"]')) return
-
-  // WebNote 开启选择模式时，
-  // 暂时阻止链接跳转、按钮提交等默认行为。
-  event.preventDefault()
-
-  const anchor = findAnchor(target)
-
-  if (!anchor) return
-
-  // 当前一个 anchor 暂时只允许创建一条笔记。
-  if (anchor.dataset.webnoteAnchorId) return
-
-  console.log('WebNote clicked:', target)
-  console.log('WebNote anchor:', anchor)
-
-  // 具体怎样创建笔记，由 note 模块负责。
-  // content.ts 这里只负责确定“什么时候、给谁创建笔记”。
-  // 为新笔记创建唯一 ID。
-const noteId = crypto.randomUUID()
-
-// 保存 anchor 的第一版特征。
-const anchorFingerprint =
-  createAnchorFingerprint(anchor)
-
-// 创建数据对象。
-const note: StoredNote = {
-  id: noteId,
-  url: location.href,
-  anchor: anchorFingerprint,
-  content: '',
-}
-
-// 创建 Note UI。
-const noteElement = createNote(anchor, {
-  id: noteId,
-
-  onChange: async (id, content) => {
-    await saveNote({
-      ...note,
-      id,
-      content,
-    })
-  },
-
-  onDelete: async (id) => {
-    await deleteNote(location.href, id)
-  },
-})
-
-/**
- * 新创建的笔记让编辑器自动获得焦点。
+ * ------------------------------
+ * Initial Restore
+ * ------------------------------
  *
- * textarea 现在位于 Shadow DOM 中，
- * 所以需要先通过 shadowRoot 进入组件内部。
+ * Content script 首次进入页面时主动恢复一次。
+ *
+ * 如果正文此时还没完全加载，
+ * MutationObserver 后续还会再次触发。
  */
-noteElement.shadowRoot
-  ?.querySelector<HTMLTextAreaElement>(
-    'textarea',
-  )
-  ?.focus()
-
-// 先保存空笔记，建立持久化关系。
-void saveNote(note)
-
-
-
-  // 创建完成后隐藏当前 hover 高亮。
-  hideHighlight()
-})
+scheduleRestore()

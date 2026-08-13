@@ -2,7 +2,6 @@
 
 import type { PreviewPayload } from './types/preview'
 
-
 chrome.runtime.onStartup.addListener(() => {
   void cleanupExpiredPreviews()
 })
@@ -24,6 +23,8 @@ const PREVIEW_TTL_MS =
  * 使用固定 ID，后续在点击事件中可以准确识别。
  */
 const PREVIEW_MENU_ID = 'webnote-preview-current-page'
+const CLEAR_PAGE_MENU_ID = 'webnote-clear-current-page'
+const CLEAR_SITE_MENU_ID = 'webnote-clear-current-site'
 
 /**
  * 扩展安装或更新时创建右键菜单。
@@ -43,6 +44,20 @@ chrome.runtime.onInstalled.addListener(async () => {
     title: '预览当前页笔记',
     contexts: ['action'],
   })
+
+  chrome.contextMenus.create({
+      id: CLEAR_PAGE_MENU_ID,
+      title: '清理当前页面笔记',
+      contexts: ['action'],
+    })
+
+  chrome.contextMenus.create({
+    id: CLEAR_SITE_MENU_ID,
+    title: '清理当前网站笔记',
+    contexts: ['action'],
+  })
+
+
   /**
    * 更新或重新安装扩展后，
    * 顺便清一次过期 Preview。
@@ -77,28 +92,89 @@ chrome.action.onClicked.addListener(async (tab) => {
  */
 chrome.contextMenus.onClicked.addListener(
   async (info, tab) => {
-    // 只处理“预览当前页笔记”这一项。
-    if (info.menuItemId !== PREVIEW_MENU_ID) return
-
     if (!tab?.id) return
 
-    try {
-      /**
-       * 告诉当前网页里的 content script：
-       *
-       * “现在生成这一页的 Markdown。”
-       *
-       * Markdown 的生成必须在 content script 中完成，
-       * 因为那里才能访问当前网页 DOM。
-       */
-      await chrome.tabs.sendMessage(tab.id, {
-        type: 'WEBNOTE_PREVIEW_REQUEST',
-      })
-    } catch (error) {
-      console.log(
-        'WebNote could not preview this page:',
-        error,
-      )
+    /**
+     * ------------------------------
+     * Preview
+     * ------------------------------
+     */
+    if (
+      info.menuItemId === PREVIEW_MENU_ID
+    ) {
+      try {
+        await chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type:
+              'WEBNOTE_PREVIEW_REQUEST',
+          },
+        )
+      } catch (error) {
+        console.log(
+          'WebNote could not preview this page:',
+          error,
+        )
+      }
+
+      return
+    }
+
+    /**
+     * ------------------------------
+     * 清理当前页面
+     * ------------------------------
+     *
+     * background 不直接删除。
+     *
+     * 先通知 content script，
+     * 由网页弹出确认框。
+     */
+    if (
+      info.menuItemId ===
+      CLEAR_PAGE_MENU_ID
+    ) {
+      try {
+        await chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type:
+              'WEBNOTE_CONFIRM_CLEAR_PAGE',
+          },
+        )
+      } catch (error) {
+        console.log(
+          'WebNote could not clear this page:',
+          error,
+        )
+      }
+
+      return
+    }
+
+    /**
+     * ------------------------------
+     * 清理当前网站
+     * ------------------------------
+     */
+    if (
+      info.menuItemId ===
+      CLEAR_SITE_MENU_ID
+    ) {
+      try {
+        await chrome.tabs.sendMessage(
+          tab.id,
+          {
+            type:
+              'WEBNOTE_CONFIRM_CLEAR_SITE',
+          },
+        )
+      } catch (error) {
+        console.log(
+          'WebNote could not clear this site:',
+          error,
+        )
+      }
     }
   },
 )
@@ -106,21 +182,55 @@ chrome.contextMenus.onClicked.addListener(
 /**
  * 接收 content script 生成好的预览数据。
  */
-chrome.runtime.onMessage.addListener((message) => {
-  if (message.type !== 'WEBNOTE_OPEN_PREVIEW') return
+chrome.runtime.onMessage.addListener(
+  (message, sender) => {
+    /**
+     * ------------------------------
+     * 打开 Preview
+     * ------------------------------
+     */
+    if (
+      message.type ===
+      'WEBNOTE_OPEN_PREVIEW'
+    ) {
+      void openPreview(message.payload)
 
-  const payload =
-    message.payload as PreviewPayload
+      return
+    }
 
-  /**
-   * storage.session 很适合这里：
-   *
-   * 它只负责把本次预览数据临时从
-   * background 传给 preview.html，
-   * 不需要永久保存。
-   */
-  void openPreview(payload)
-})
+    /**
+     * ------------------------------
+     * 删除当前页面全部笔记
+     * ------------------------------
+     */
+    if (
+      message.type ===
+      'WEBNOTE_CLEAR_PAGE_REQUEST'
+    ) {
+      void clearPageNotes(
+        message.url,
+        sender.tab?.id,
+      )
+
+      return
+    }
+
+    /**
+     * ------------------------------
+     * 删除当前网站全部笔记
+     * ------------------------------
+     */
+    if (
+      message.type ===
+      'WEBNOTE_CLEAR_SITE_REQUEST'
+    ) {
+      void clearSiteNotes(
+        message.origin,
+        sender.tab?.id,
+      )
+    }
+  },
+)
 
 /**
  * 打开一个独立 Preview。
@@ -243,4 +353,125 @@ async function cleanupExpiredPreviews():
       expiredKeys,
     )
   }
+}
+
+
+/**
+ * 删除一个页面保存的全部笔记。
+ */
+async function clearPageNotes(
+  url: string,
+  tabId?: number,
+): Promise<void> {
+  await deleteNotesForPage(url)
+
+  /**
+   * storage 已经删除后，
+   * 通知当前网页把已经渲染出来的 Note UI 也清掉。
+   */
+  if (tabId !== undefined) {
+    await chrome.tabs.sendMessage(
+      tabId,
+      {
+        type:
+          'WEBNOTE_CLEAR_RENDERED_NOTES',
+      },
+    )
+  }
+}
+
+/**
+ * 删除当前网站下所有页面的笔记。
+ */
+async function clearSiteNotes(
+  origin: string,
+  tabId?: number,
+): Promise<void> {
+  await deleteNotesForOrigin(origin)
+
+  /**
+   * 当前 tab 上已经显示出来的笔记
+   * 同样需要立即清理。
+   *
+   * 其他页面以后再次访问时，
+   * 因为 storage 已经没有对应数据，
+   * 自然不会再恢复。
+   */
+  if (tabId !== undefined) {
+    await chrome.tabs.sendMessage(
+      tabId,
+      {
+        type:
+          'WEBNOTE_CLEAR_RENDERED_NOTES',
+      },
+    )
+  }
+}
+
+/**
+ * WebNote 持久笔记的 storage key。
+ *
+ * 必须和 noteStorage.ts 中现有规则保持一致。
+ */
+function getNoteStorageKey(
+  url: string,
+): string {
+  return `webnote:${url}`
+}
+
+/**
+ * 删除某一个完整 URL 对应的全部笔记。
+ *
+ * 这里直接操作 chrome.storage.local，
+ * 避免 background 和 content 共用 noteStorage.ts，
+ * 从而防止 Vite 为 content script 生成共享 ES module chunk。
+ */
+async function deleteNotesForPage(
+  url: string,
+): Promise<void> {
+  await chrome.storage.local.remove(
+    getNoteStorageKey(url),
+  )
+}
+
+/**
+ * 删除某个 origin 下保存的全部 WebNote 页面笔记。
+ */
+async function deleteNotesForOrigin(
+  origin: string,
+): Promise<number> {
+  const allItems =
+    await chrome.storage.local.get(null)
+
+  const keysToDelete: string[] = []
+
+  for (const key of Object.keys(allItems)) {
+    if (!key.startsWith('webnote:')) {
+      continue
+    }
+
+    const pageUrl =
+      key.slice('webnote:'.length)
+
+    try {
+      const parsedUrl = new URL(pageUrl)
+
+      if (parsedUrl.origin === origin) {
+        keysToDelete.push(key)
+      }
+    } catch {
+      /**
+       * 非 WebNote URL 数据不处理。
+       */
+      continue
+    }
+  }
+
+  if (keysToDelete.length > 0) {
+    await chrome.storage.local.remove(
+      keysToDelete,
+    )
+  }
+
+  return keysToDelete.length
 }

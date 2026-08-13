@@ -81,3 +81,88 @@ export async function deleteNote(
     [key]: remainingNotes,
   })
 }
+
+/**
+ * 删除某一个完整 URL 对应的全部笔记。
+ *
+ * 例如：
+ * https://react.dev/learn
+ *
+ * 只会删除这一页，不影响同网站其他页面。
+ */
+export async function deleteNotesForPage(
+  url: string,
+): Promise<void> {
+  const storageKey = getStorageKey(url)
+
+  await chrome.storage.local.remove(storageKey)
+}
+
+/**
+ * 删除某个 origin 下保存的所有 WebNote 页面笔记。
+ *
+ * 例如：
+ * origin = https://react.dev
+ *
+ * 会删除：
+ * https://react.dev/learn
+ * https://react.dev/reference/react
+ * ...
+ *
+ * 但不会删除其他网站。
+ */
+export async function deleteNotesForOrigin(
+  origin: string,
+): Promise<number> {
+  /**
+   * 读取 storage.local 中所有数据。
+   *
+   * 当前 WebNote 的持久笔记 key 格式为：
+   *
+   * webnote:<完整URL>
+   */
+  const allItems =
+    await chrome.storage.local.get(null)
+
+  const keysToDelete: string[] = []
+
+  for (const key of Object.keys(allItems)) {
+    if (!key.startsWith('webnote:')) {
+      continue
+    }
+
+    /**
+     * 去掉 "webnote:" 前缀，
+     * 得到原始页面 URL。
+     */
+    const pageUrl =
+      key.slice('webnote:'.length)
+
+    try {
+      const parsedUrl = new URL(pageUrl)
+
+      if (parsedUrl.origin === origin) {
+        keysToDelete.push(key)
+      }
+    } catch {
+      /**
+       * 如果未来 storage 中出现其他结构，
+       * 无法解析为 URL 的 key 不做处理。
+       */
+      continue
+    }
+  }
+
+  if (keysToDelete.length > 0) {
+    await chrome.storage.local.remove(
+      keysToDelete,
+    )
+  }
+
+  /**
+   * 返回实际删除了多少个“页面记录”。
+   *
+   * 后面如果做 UI 提示时可以直接使用。
+   */
+  return keysToDelete.length
+}
