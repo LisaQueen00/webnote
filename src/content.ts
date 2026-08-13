@@ -235,9 +235,16 @@ const noteElement = createNote(anchor, {
   },
 })
 
-// 新建笔记后直接开始输入。
-noteElement
-  .querySelector<HTMLTextAreaElement>('textarea')
+/**
+ * 新创建的笔记让编辑器自动获得焦点。
+ *
+ * textarea 现在位于 Shadow DOM 中，
+ * 所以需要先通过 shadowRoot 进入组件内部。
+ */
+noteElement.shadowRoot
+  ?.querySelector<HTMLTextAreaElement>(
+    'textarea',
+  )
   ?.focus()
 
 // 先保存空笔记，建立持久化关系。

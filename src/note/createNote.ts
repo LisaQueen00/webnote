@@ -13,8 +13,8 @@ interface CreateNoteOptions {
   /**
    * 用户修改笔记内容时触发。
    *
-   * 外层负责决定怎么持久化，
-   * Note UI 本身不直接依赖 chrome.storage。
+   * Note UI 只负责交互，
+   * 真正的持久化逻辑交给外层处理。
    */
   onChange?: (
     noteId: string,
@@ -30,7 +30,10 @@ interface CreateNoteOptions {
 }
 
 /**
- * 为指定 anchor 创建 WebNote Note UI。
+ * 为指定 anchor 创建一条 WebNote 笔记。
+ *
+ * 当前版本使用 Shadow DOM 隔离 Note UI，
+ * 尽量避免宿主网页 CSS 污染我们的样式。
  */
 export function createNote(
   anchor: HTMLElement,
@@ -44,157 +47,294 @@ export function createNote(
   } = options
 
   /**
-   * 创建整个 Note UI 外层。
+   * ------------------------------------------------
+   * Shadow Host
+   * ------------------------------------------------
+   *
+   * 这个 div 会真正插入原网页 DOM。
+   *
+   * Note UI 本身不会直接作为它的普通子元素，
+   * 而是被放进 Shadow Root 中。
    */
-  const noteContainer = document.createElement('div')
+  const noteHost = document.createElement('div')
 
-  noteContainer.dataset.webnote = 'true'
-  noteContainer.dataset.webnoteAnchorId = anchorId
+  // 标记这是 WebNote 自己创建的 DOM。
+  noteHost.dataset.webnote = 'true'
 
-  noteContainer.style.display = 'block'
-  noteContainer.style.width = '100%'
-  noteContainer.style.margin = '12px 0'
-  noteContainer.style.boxSizing = 'border-box'
-  noteContainer.style.border =
-    '1px solid rgba(139, 92, 246, 0.25)'
-  noteContainer.style.borderRadius = '8px'
-  noteContainer.style.background = '#ffffff'
-  noteContainer.style.color = '#111111'
-  noteContainer.style.fontFamily = 'sans-serif'
-  noteContainer.style.overflow = 'hidden'
+  // 保存对应 anchor 的 ID。
+  noteHost.dataset.webnoteAnchorId = anchorId
 
   /**
-   * ---------------------------
-   * Header
-   * ---------------------------
+   * host 本身仍属于原网页文档流，
+   * 所以这里只保留最基础的布局属性。
+   */
+  noteHost.style.display = 'block'
+  noteHost.style.width = '100%'
+  noteHost.style.margin = '12px 0'
+  noteHost.style.boxSizing = 'border-box'
+
+  /**
+   * 创建 Shadow Root。
+   *
+   * mode: 'open'
+   * 表示我们仍然可以通过 noteHost.shadowRoot
+   * 获取里面的 DOM。
+   */
+  const shadowRoot = noteHost.attachShadow({
+    mode: 'open',
+  })
+
+  /**
+   * ------------------------------------------------
+   * Shadow DOM 内部样式
+   * ------------------------------------------------
+   *
+   * 样式放进 Shadow Root 后，
+   * 宿主网页的大多数 CSS selector
+   * 无法直接影响里面的元素。
+   */
+  const style = document.createElement('style')
+
+  style.textContent = `
+    :host {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    .webnote-container {
+      width: 100%;
+      overflow: hidden;
+
+      border:
+        1px solid rgba(139, 92, 246, 0.25);
+      border-radius: 8px;
+
+      background: #ffffff;
+      color: #111111;
+
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+    }
+
+    .webnote-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+
+      padding: 8px 12px;
+
+      background:
+        rgba(139, 92, 246, 0.06);
+
+      border-bottom:
+        1px solid rgba(139, 92, 246, 0.12);
+    }
+
+    .webnote-title {
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+
+    .webnote-delete {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      width: 24px;
+      height: 24px;
+
+      padding: 0;
+      border: none;
+      border-radius: 4px;
+
+      background: transparent;
+      color: #666666;
+
+      font: inherit;
+      font-size: 18px;
+      line-height: 1;
+
+      cursor: pointer;
+    }
+
+    .webnote-delete:hover {
+      background:
+        rgba(0, 0, 0, 0.05);
+    }
+
+    .webnote-editor {
+      display: block;
+
+      width: 100%;
+      min-height: 100px;
+
+      padding: 12px;
+
+      border: none;
+      outline: none;
+
+      resize: vertical;
+
+      background: #ffffff;
+      color: #111111;
+
+      font: inherit;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .webnote-editor::placeholder {
+      color: #999999;
+    }
+  `
+
+  /**
+   * ------------------------------------------------
+   * Note UI
+   * ------------------------------------------------
+   */
+  const noteContainer =
+    document.createElement('div')
+
+  noteContainer.className =
+    'webnote-container'
+
+  /**
+   * 标题栏。
    */
   const header = document.createElement('div')
 
-  header.style.display = 'flex'
-  header.style.alignItems = 'center'
-  header.style.justifyContent = 'space-between'
-  header.style.padding = '8px 12px'
-  header.style.background = 'rgba(139, 92, 246, 0.06)'
-  header.style.borderBottom =
-    '1px solid rgba(139, 92, 246, 0.12)'
+  header.className =
+    'webnote-header'
 
+  /**
+   * 标题。
+   */
   const title = document.createElement('span')
 
-  title.textContent = '📝 WebNote'
-  title.style.fontSize = '13px'
-  title.style.fontWeight = '600'
-  title.style.lineHeight = '1.4'
+  title.className =
+    'webnote-title'
+
+  title.textContent =
+    '📝 WebNote'
 
   /**
    * 删除按钮。
    */
-  const deleteButton = document.createElement('button')
+  const deleteButton =
+    document.createElement('button')
+
+  deleteButton.className =
+    'webnote-delete'
 
   deleteButton.type = 'button'
   deleteButton.textContent = '×'
   deleteButton.title = '删除笔记'
 
-  deleteButton.style.display = 'flex'
-  deleteButton.style.alignItems = 'center'
-  deleteButton.style.justifyContent = 'center'
-  deleteButton.style.width = '24px'
-  deleteButton.style.height = '24px'
-  deleteButton.style.padding = '0'
-  deleteButton.style.border = 'none'
-  deleteButton.style.borderRadius = '4px'
-  deleteButton.style.background = 'transparent'
-  deleteButton.style.color = '#666666'
-  deleteButton.style.fontSize = '18px'
-  deleteButton.style.lineHeight = '1'
-  deleteButton.style.cursor = 'pointer'
-
   /**
-   * 点击删除：
+   * 删除笔记时：
    *
-   * 1. 通知外层删除持久化数据
-   * 2. 解除 anchor 关系
-   * 3. 删除 Note UI
+   * 1. 通知外层删除 storage 数据
+   * 2. 解除 anchor 和 note 的关系
+   * 3. 删除整个 Shadow Host
    */
-  deleteButton.addEventListener('click', (event) => {
-    event.stopPropagation()
+  deleteButton.addEventListener(
+    'click',
+    (event) => {
+      event.stopPropagation()
 
-    // 不阻塞 UI 删除，
-    // storage 删除可以异步完成。
-    void onDelete?.(anchorId)
+      void onDelete?.(anchorId)
 
-    delete anchor.dataset.webnoteAnchorId
+      delete anchor.dataset.webnoteAnchorId
 
-    noteContainer.remove()
-  })
+      noteHost.remove()
+    },
+  )
 
   /**
-   * ---------------------------
-   * Editor
-   * ---------------------------
+   * 笔记编辑器。
    */
-  const noteEditor = document.createElement('textarea')
+  const noteEditor =
+    document.createElement('textarea')
 
-  noteEditor.placeholder = '写点笔记...'
+  noteEditor.className =
+    'webnote-editor'
 
-  // 如果这是从 storage 恢复出来的笔记，
-  // 直接把之前内容填回来。
-  noteEditor.value = initialContent
+  noteEditor.placeholder =
+    '写点笔记...'
 
-  noteEditor.style.display = 'block'
-  noteEditor.style.width = '100%'
-  noteEditor.style.minHeight = '100px'
-  noteEditor.style.padding = '12px'
-  noteEditor.style.boxSizing = 'border-box'
-  noteEditor.style.border = 'none'
-  noteEditor.style.outline = 'none'
-  noteEditor.style.resize = 'vertical'
-  noteEditor.style.background = '#ffffff'
-  noteEditor.style.color = '#111111'
-  noteEditor.style.fontSize = '14px'
-  noteEditor.style.fontFamily = 'inherit'
-  noteEditor.style.lineHeight = '1.6'
+  noteEditor.value =
+    initialContent
 
   /**
-   * 保存防抖计时器。
+   * 输入防抖。
    *
-   * 我们不希望用户每敲一个字，
-   * 都立即执行一次 storage 写入。
+   * 用户停止输入 300ms 后再通知外层保存。
    */
   let saveTimer: number | undefined
 
-  noteEditor.addEventListener('input', () => {
-    if (saveTimer !== undefined) {
-      window.clearTimeout(saveTimer)
-    }
+  noteEditor.addEventListener(
+    'input',
+    () => {
+      if (saveTimer !== undefined) {
+        window.clearTimeout(saveTimer)
+      }
 
-    /**
-     * 停止输入 300ms 后再保存。
-     *
-     * 这就是一个非常简单的 debounce。
-     */
-    saveTimer = window.setTimeout(() => {
-      void onChange?.(
-        anchorId,
-        noteEditor.value,
+      saveTimer = window.setTimeout(
+        () => {
+          void onChange?.(
+            anchorId,
+            noteEditor.value,
+          )
+        },
+        300,
       )
-    }, 300)
-  })
+    },
+  )
 
   /**
    * 组装 Note UI。
    */
-  header.append(title, deleteButton)
-  noteContainer.append(header, noteEditor)
+  header.append(
+    title,
+    deleteButton,
+  )
+
+  noteContainer.append(
+    header,
+    noteEditor,
+  )
 
   /**
-   * anchor 和 note 使用同一个 ID。
+   * Shadow Root 内加入样式和 UI。
    */
-  anchor.dataset.webnoteAnchorId = anchorId
-
-  anchor.insertAdjacentElement(
-    'afterend',
+  shadowRoot.append(
+    style,
     noteContainer,
   )
 
-  return noteContainer
+  /**
+   * anchor 和 note 使用相同 ID。
+   */
+  anchor.dataset.webnoteAnchorId =
+    anchorId
+
+  /**
+   * 把 Shadow Host 插到 anchor 后面。
+   */
+  anchor.insertAdjacentElement(
+    'afterend',
+    noteHost,
+  )
+
+  return noteHost
 }
