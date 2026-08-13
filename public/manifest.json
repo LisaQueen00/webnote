@@ -3,6 +3,16 @@
   "name": "WebNote",
   "version": "0.0.1",
   "description": "Write notes directly on web pages.",
+
+  "action": {
+    "default_title": "Toggle WebNote"
+  },
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
