@@ -4,6 +4,8 @@
   "version": "0.0.1",
   "description": "Write notes directly on web pages.",
 
+  "permissions": ["storage"],
+
   "action": {
     "default_title": "Toggle WebNote"
   },
