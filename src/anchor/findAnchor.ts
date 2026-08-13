@@ -12,16 +12,29 @@ export const ANCHOR_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote'
 
 /**
- * 从用户真正命中的 DOM 元素开始，
- * 沿 DOM 树向上寻找一个适合作为笔记 anchor 的元素。
+ * 第二优先级：现代网页中经常承载正文内容的通用容器。
+ *
+ * div / span 本身没有明确语义，
+ * 所以后面还需要进一步判断它们是否真的适合作为 anchor。
  */
-export function findAnchor(
-  target: HTMLElement,
-): HTMLElement | null {
-  return target.closest<HTMLElement>(ANCHOR_SELECTOR)
-}
+const FALLBACK_SELECTOR = 'div, span'
 
 /**
+ * 明显不适合成为阅读笔记 anchor 的元素或区域。
+ *
+ * 比如：
+ * - 导航栏
+ * - 按钮
+ * - 输入框
+ * - 菜单
+ *
+ * 即使里面有文字，也通常不应该被 WebNote
+ * 当成“正文内容块”。
+ */
+const EXCLUDED_SELECTOR =
+  'button, input, textarea, select, option, nav, menu, [role="button"], [role="menu"], [role="navigation"]'
+
+  /**
  * 规范化文本。
  *
  * 将：
@@ -36,6 +49,146 @@ export function findAnchor(
 function normalizeText(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
+
+function isReadableFallback(
+  element: HTMLElement,
+): boolean {
+  /**
+   * WebNote 自己创建的 DOM 永远不能作为 anchor。
+   */
+  if (element.closest('[data-webnote="true"]')) {
+    return false
+  }
+
+  /**
+   * 如果元素本身或所在区域属于明显的交互 / 导航结构，
+   * 就直接排除。
+   */
+  if (
+    element.matches(EXCLUDED_SELECTOR) ||
+    element.closest(EXCLUDED_SELECTOR)
+  ) {
+    return false
+  }
+
+  const text = normalizeText(
+    element.innerText || element.textContent || '',
+  )
+
+  /**
+   * 文本太短通常只是：
+   * - 一个图标文字
+   * - 一个标签
+   * - 一个按钮标题
+   *
+   * 第一版先用 20 个字符作为经验阈值。
+   *
+   * 这个数字以后可以继续根据真实网页测试调整。
+   */
+  if (text.length < 20) {
+    return false
+  }
+
+  /**
+   * 元素必须真正占据一定的可见区域。
+   *
+   * display:none 或尺寸接近 0 的元素
+   * 不适合成为阅读 anchor。
+   */
+  const rect = element.getBoundingClientRect()
+
+  if (rect.width < 40 || rect.height < 16) {
+    return false
+  }
+
+  /**
+   * 如果一个元素内部已经包含明显的语义正文元素，
+   * 就不要选择外层 div。
+   *
+   * 例如：
+   *
+   * <div>
+   *   <p>正文</p>
+   * </div>
+   *
+   * 应该选择 <p>，
+   * 而不是把整个 div 当成 anchor。
+   */
+  if (
+    element.querySelector(ANCHOR_SELECTOR)
+  ) {
+    return false
+  }
+
+  return true
+}
+
+/**
+ * 从用户真正命中的 DOM 元素开始，
+ * 沿 DOM 树向上寻找一个适合作为笔记 anchor 的元素。
+ */
+/**
+ * 从用户真正命中的元素开始寻找合适的 anchor。
+ *
+ * 当前策略：
+ *
+ * 1. 优先寻找明确的语义元素
+ * 2. 找不到时，再沿 DOM 树向上检查 div / span
+ * 3. 通用元素必须通过可读性判断
+ */
+export function findAnchor(
+  target: HTMLElement,
+): HTMLElement | null {
+  /**
+   * --------------------------------
+   * 第一阶段：语义元素
+   * --------------------------------
+   */
+  const semanticAnchor =
+    target.closest<HTMLElement>(ANCHOR_SELECTOR)
+
+  if (semanticAnchor) {
+    return semanticAnchor
+  }
+
+  /**
+   * --------------------------------
+   * 第二阶段：通用容器兜底
+   * --------------------------------
+   *
+   * 从真正点中的元素开始，
+   * 一层一层沿 DOM 树向上检查。
+   */
+  let current: HTMLElement | null = target
+
+  while (
+    current &&
+    current !== document.body
+  ) {
+    /**
+     * 只有 div / span 才进入这一版 fallback 判断。
+     *
+     * 暂时不把 article / section 这类大范围容器放进来，
+     * 避免一不小心选中半个页面。
+     */
+    if (
+      current.matches(FALLBACK_SELECTOR) &&
+      isReadableFallback(current)
+    ) {
+      return current
+    }
+
+    current = current.parentElement
+  }
+
+  /**
+   * 两种策略都没有找到合理 anchor，
+   * 当前点击就不创建笔记。
+   */
+  return null
+}
+
+
 
 /**
  * 为一个 DOM 元素生成结构 selector。
