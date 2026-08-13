@@ -1,13 +1,11 @@
+import { findAnchor } from './anchor/findAnchor'
+
 console.log('WebNote content script loaded!')
 
 // WebNote 默认关闭。
 // 只有用户点击浏览器工具栏图标后，才进入选择模式。
 let isActive = false
 
-// 当前第一版支持作为笔记锚点的语义元素。
-// 后续 findAnchor() 会逐步升级为更智能的选择算法。
-const ANCHOR_SELECTOR =
-  'p, h1, h2, h3, h4, h5, h6, li, pre, blockquote'
 
 /**
  * 创建 WebNote 独立的高亮层。
@@ -27,13 +25,6 @@ highlightOverlay.style.display = 'none'
 
 document.body.appendChild(highlightOverlay)
 
-/**
- * 从用户实际命中的 DOM 元素开始，
- * 沿 DOM 树向上寻找合适的笔记锚点。
- */
-function findAnchor(target: HTMLElement): HTMLElement | null {
-  return target.closest<HTMLElement>(ANCHOR_SELECTOR)
-}
 
 /**
  * 根据 anchor 当前的位置，
