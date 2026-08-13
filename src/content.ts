@@ -19,11 +19,142 @@ import type { StoredNote } from './types/note'
 import {exportCurrentPageMarkdown,} from './export/exportPageNotes'
 
 console.log('WebNote content script loaded!')
+
 /**
- * Content Script 启动以后，
- * 自动恢复当前网页以前保存的笔记。
+ * 当前 WebNote 认为正在处理的页面 URL。
+ *
+ * SPA 路由切换时 content script 本身不会重新加载，
+ * 所以需要自己判断 location.href 是否已经变化。
  */
-void restoreNotes()
+let currentPageUrl = location.href
+
+/**
+ * restoreNotes() 的 debounce timer。
+ *
+ * 动态网页一次渲染可能连续产生大量 DOM mutation，
+ * 我们不希望每个 mutation 都执行一次笔记恢复。
+ */
+let restoreTimer: number | undefined
+
+/**
+ * 清理当前页面中 WebNote 已经渲染出来的运行时 UI 和标记。
+ *
+ * 注意：
+ * 这里只删除 DOM 中的 Note UI 和 anchor 标记，
+ * 不删除 chrome.storage.local 中真正保存的笔记数据。
+ */
+function clearRenderedNotes(): void {
+  /**
+   * 删除 WebNote Note Host。
+   *
+   * Note UI 本身现在位于 Shadow DOM 中，
+   * 但 Shadow Host 仍然是普通 DOM 元素，
+   * 所以可以直接从 document 中找到。
+   */
+  document
+    .querySelectorAll<HTMLElement>(
+      '[data-webnote="true"][data-webnote-anchor-id]',
+    )
+    .forEach((noteHost) => {
+      noteHost.remove()
+    })
+
+  /**
+   * 清掉原网页 anchor 上的运行时关联 ID。
+   *
+   * 如果不清理，
+   * restoreNotes() 会认为这些 anchor 已经恢复过。
+   */
+  document
+    .querySelectorAll<HTMLElement>(
+      '[data-webnote-anchor-id]',
+    )
+    .forEach((anchor) => {
+      delete anchor.dataset.webnoteAnchorId
+    })
+
+  // 页面切换时顺便隐藏旧的高亮。
+  hideHighlight()
+}
+
+/**
+ * 延迟执行一次恢复。
+ *
+ * 动态页面经常连续修改 DOM，
+ * 因此等待短暂稳定后再寻找 anchor。
+ */
+function scheduleRestore(): void {
+  if (restoreTimer !== undefined) {
+    window.clearTimeout(restoreTimer)
+  }
+
+  restoreTimer = window.setTimeout(() => {
+    void restoreNotes()
+  }, 300)
+}
+
+/**
+ * 检查当前 URL 是否发生变化。
+ *
+ * 对传统整页导航来说 content script 会重新加载；
+ * 这个逻辑主要是处理 React / Next.js 等 SPA 路由。
+ */
+function checkPageChange(): void {
+  const newUrl = location.href
+
+  // URL 没变，只说明当前页面 DOM 可能更新了。
+  if (newUrl === currentPageUrl) {
+    scheduleRestore()
+    return
+  }
+
+  /**
+   * SPA 已经切换到了另一个 URL。
+   */
+  currentPageUrl = newUrl
+
+  // 清理上一页面的运行时 DOM 状态。
+  clearRenderedNotes()
+
+  // 等新页面内容渲染后重新恢复当前 URL 的笔记。
+  scheduleRestore()
+}
+
+/**
+ * 监听动态网页 DOM 变化。
+ *
+ * 这同时解决两个问题：
+ *
+ * 1. 首次刷新时正文异步加载较晚
+ * 2. SPA 路由切换后新页面重新渲染
+ */
+const pageObserver = new MutationObserver(() => {
+  checkPageChange()
+})
+
+pageObserver.observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+})
+
+/**
+ * 浏览器前进 / 后退时会触发 popstate。
+ *
+ * MutationObserver 通常也会捕获随后的 DOM 变化，
+ * 这里额外监听一次，让页面切换响应更直接。
+ */
+window.addEventListener('popstate', () => {
+  checkPageChange()
+})
+
+/**
+ * 首次进入页面时主动恢复一次。
+ *
+ * 即使第一次正文还没有加载完成，
+ * 后面的 MutationObserver 仍会再次触发恢复。
+ */
+scheduleRestore()
+
 
 // WebNote 默认关闭。
 // 只有用户点击浏览器工具栏图标后，才进入选择模式。

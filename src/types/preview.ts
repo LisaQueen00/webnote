@@ -1,15 +1,27 @@
 // src/types/preview.ts
 
 /**
- * 从正文页面传给 WebNote 预览页的数据。
+ * 一次预览的数据。
+ *
+ * previewId 用来区分不同预览页面，
+ * 避免多个预览互相覆盖。
  */
 export interface PreviewPayload {
-  // 当前网页标题，用于预览页显示和生成文件名。
+  // 本次预览唯一 ID。
+  id: string
+
+  // 当前网页标题。
   title: string
 
   // 原网页地址。
   url: string
 
-  // 已经按 DOM 顺序合并完成的最终 Markdown。
+  // 最终合成后的 Markdown。
   markdown: string
+
+  // 创建时间戳。
+  createdAt: number
+
+  // Preview 缓存过期时间。
+  expiresAt: number
 }

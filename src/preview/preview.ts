@@ -10,6 +10,19 @@ import type {
 import './preview.css'
 
 /**
+ * 从当前 Preview 页 URL 中读取 previewId。
+ *
+ * URL 形式：
+ * preview.html?id=abc123
+ */
+function getPreviewId(): string | null {
+  const params =
+    new URLSearchParams(location.search)
+
+  return params.get('id')
+}
+
+/**
  * Preview 页面入口。
  */
 async function initPreview(): Promise<void> {
@@ -19,25 +32,53 @@ async function initPreview(): Promise<void> {
   if (!app) return
 
   /**
-   * background.ts 在打开本页面前，
-   * 已经把当前预览内容写进 storage.session。
+   * 当前 Preview 页必须带有 previewId。
    */
+  const previewId = getPreviewId()
+
+  if (!previewId) {
+    app.textContent =
+      '缺少 WebNote Preview ID。'
+
+    return
+  }
+
+  /**
+   * 根据 previewId 构造独立 storage key。
+   */
+  const storageKey =
+    `webnotePreview:${previewId}`
+
   const result =
     await chrome.storage.session.get(
-      'webnotePreview',
+      storageKey,
     )
 
   const payload =
-    result.webnotePreview as
+    result[storageKey] as
       | PreviewPayload
       | undefined
 
-  /**
-   * 没有预览数据时显示简单提示。
-   */
   if (!payload) {
     app.textContent =
-      '没有找到可预览的 WebNote 数据。'
+      '没有找到对应的 WebNote 预览数据。'
+
+    return
+  }
+  /**
+ * Preview 已经过期时，不再继续展示。
+ *
+ * 理论上 background 的 cleanup 会处理，
+ * 这里再做一层校验，
+ * 防止用户打开了很久以前留下的 Preview URL。
+ */
+  if (payload.expiresAt <= Date.now()) {
+    await chrome.storage.session.remove(
+      storageKey,
+    )
+
+    app.textContent =
+    '这份 WebNote 预览已经过期，请从原页面重新生成。'
 
     return
   }

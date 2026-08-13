@@ -2,6 +2,22 @@
 
 import type { PreviewPayload } from './types/preview'
 
+
+chrome.runtime.onStartup.addListener(() => {
+  void cleanupExpiredPreviews()
+})
+
+
+/**
+ * Preview 临时缓存保留时间。
+ *
+ * 当前先设为 24 小时。
+ * 用户即使误关 Preview，也还有机会重新打开后续生成的预览；
+ * 同时旧缓存不会无限积累。
+ */
+const PREVIEW_TTL_MS =
+  24 * 60 * 60 * 1000
+
 /**
  * WebNote 右键菜单 ID。
  *
@@ -27,7 +43,12 @@ chrome.runtime.onInstalled.addListener(async () => {
     title: '预览当前页笔记',
     contexts: ['action'],
   })
-})
+  /**
+   * 更新或重新安装扩展后，
+   * 顺便清一次过期 Preview。
+   */
+  await cleanupExpiredPreviews()  
+},)
 
 /**
  * 左键点击 WebNote 图标：
@@ -102,28 +123,124 @@ chrome.runtime.onMessage.addListener((message) => {
 })
 
 /**
- * 保存临时预览数据并打开 WebNote Preview 页面。
+ * 打开一个独立 Preview。
+ *
+ * 每次预览都生成自己的 previewId，
+ * 因此多个预览页可以同时存在，不会互相覆盖。
  */
 async function openPreview(
-  payload: PreviewPayload,
+  payload: Omit<PreviewPayload, 'id' | 'createdAt' | 'expiresAt' >,
 ): Promise<void> {
   /**
-   * session storage 默认只对扩展页和
-   * service worker 等 trusted context 开放。
-   *
-   * content script 不需要直接访问它。
+   * 每次创建新 Preview 前，
+   * 顺便清理一次已经过期的旧缓存。
    */
+  await cleanupExpiredPreviews()
+
+  const previewId =
+    crypto.randomUUID()
+
+  const createdAt = Date.now()
+
+  const previewPayload:
+    PreviewPayload = {
+    ...payload,
+
+    id: previewId,
+
+    createdAt,
+
+    /**
+     * 过期时间由创建时间 + TTL 得出。
+     */
+    expiresAt:
+      createdAt + PREVIEW_TTL_MS,
+  }
+
+  const storageKey =
+    `webnotePreview:${previewId}`
+
   await chrome.storage.session.set({
-    webnotePreview: payload,
+    [storageKey]:
+      previewPayload,
   })
 
-  /**
-   * 打开扩展自身的 preview.html。
-   *
-   * Chrome Tabs API 可以直接创建一个新的扩展页面标签页，
-   * 不需要额外申请 tabs 权限来完成单纯的 tab 创建。
-   */
+  const previewUrl =
+    chrome.runtime.getURL(
+      `preview.html?id=${encodeURIComponent(
+        previewId,
+      )}`,
+    )
+
   await chrome.tabs.create({
-    url: chrome.runtime.getURL('preview.html'),
+    url: previewUrl,
   })
+}
+
+
+/**
+ * 清理 storage.session 中已经过期的 Preview 数据。
+ *
+ * WebNote Preview 的 key 都统一使用：
+ *
+ * webnotePreview:<previewId>
+ *
+ * 因此这里只检查这个前缀，
+ * 不影响 storage.session 中未来可能出现的其他数据。
+ */
+async function cleanupExpiredPreviews():
+  Promise<void> {
+  const allItems =
+    await chrome.storage.session.get(null)
+
+  const now = Date.now()
+
+  const expiredKeys: string[] = []
+
+  for (
+    const [key, value]
+    of Object.entries(allItems)
+  ) {
+    /**
+     * 只处理 WebNote Preview 数据。
+     */
+    if (
+      !key.startsWith(
+        'webnotePreview:',
+      )
+    ) {
+      continue
+    }
+
+    const preview =
+      value as
+        | PreviewPayload
+        | undefined
+
+    /**
+     * 如果数据结构异常，
+     * 暂时不贸然删除。
+     *
+     * 只删除明确已经过期的数据。
+     */
+    if (
+      !preview ||
+      typeof preview.expiresAt !== 'number'
+    ) {
+      continue
+    }
+
+    if (preview.expiresAt <= now) {
+      expiredKeys.push(key)
+    }
+  }
+
+  /**
+   * Chrome Storage 支持一次删除多个 key。
+   */
+  if (expiredKeys.length > 0) {
+    await chrome.storage.session.remove(
+      expiredKeys,
+    )
+  }
 }
