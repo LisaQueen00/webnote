@@ -1,4 +1,9 @@
 import { findAnchor } from './anchor/findAnchor'
+import {
+  hideHighlight,
+  showHighlight,
+} from './highlight/highlight'
+
 
 console.log('WebNote content script loaded!')
 
@@ -6,54 +11,6 @@ console.log('WebNote content script loaded!')
 // 只有用户点击浏览器工具栏图标后，才进入选择模式。
 let isActive = false
 
-
-/**
- * 创建 WebNote 独立的高亮层。
- *
- * 它通过 fixed 定位覆盖在目标 anchor 上，
- * 不直接修改网页元素本身的 border / outline。
- */
-const highlightOverlay = document.createElement('div')
-
-highlightOverlay.dataset.webnote = 'true'
-highlightOverlay.style.position = 'fixed'
-highlightOverlay.style.pointerEvents = 'none'
-highlightOverlay.style.borderRadius = '4px'
-highlightOverlay.style.boxSizing = 'border-box'
-highlightOverlay.style.zIndex = '2147483647'
-highlightOverlay.style.display = 'none'
-
-document.body.appendChild(highlightOverlay)
-
-
-/**
- * 根据 anchor 当前的位置，
- * 更新 WebNote 高亮层。
- *
- * soft = true 时使用更淡的高亮，
- * 用来表示已有笔记和原文之间的关联。
- */
-function updateHighlight(anchor: HTMLElement, soft = false): void {
-  const rect = anchor.getBoundingClientRect()
-
-  highlightOverlay.style.left = `${rect.left}px`
-  highlightOverlay.style.top = `${rect.top}px`
-  highlightOverlay.style.width = `${rect.width}px`
-  highlightOverlay.style.height = `${rect.height}px`
-
-  highlightOverlay.style.border = soft
-    ? '2px solid rgba(139, 92, 246, 0.18)'
-    : '2px solid rgba(139, 92, 246, 0.32)'
-
-  highlightOverlay.style.display = 'block'
-}
-
-/**
- * 隐藏 WebNote 的 anchor 高亮。
- */
-function hideHighlight(): void {
-  highlightOverlay.style.display = 'none'
-}
 
 /**
  * 根据 WebNote 保存的 anchor ID，
@@ -120,7 +77,7 @@ document.addEventListener('mousemove', (event) => {
       const anchor = findAnchorById(anchorId)
 
       if (anchor) {
-        updateHighlight(anchor, true)
+        showHighlight(anchor, true)
         return
       }
     }
@@ -138,7 +95,7 @@ document.addEventListener('mousemove', (event) => {
   }
 
   // 用户正在选择网页内容时显示正常强度的高亮。
-  updateHighlight(anchor)
+  showHighlight(anchor, true)
 })
 
 /**
