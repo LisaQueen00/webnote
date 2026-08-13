@@ -117,12 +117,12 @@ document.addEventListener('click', (event) => {
 
   const target = event.target
 
+  // WebNote 自己创建的 UI 不参与创建新 anchor。
+  if (target.closest('[data-webnote="true"]')) return
+
   // WebNote 开启选择模式时，
   // 暂时阻止链接跳转、按钮提交等默认行为。
   event.preventDefault()
-
-  // WebNote 自己创建的 UI 不参与创建新 anchor。
-  if (target.closest('[data-webnote="true"]')) return
 
   const anchor = findAnchor(target)
 
