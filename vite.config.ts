@@ -5,11 +5,31 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        // 网页中运行的 Content Script。
-        content: resolve(import.meta.dirname, 'src/content.ts'),
+         /**
+         * Content Script。
+         */
+        content: resolve(
+          import.meta.dirname,
+          'src/content.ts',
+        ),
 
-        // Chrome 扩展后台运行的 Service Worker。
-        background: resolve(import.meta.dirname, 'src/background.ts'),
+        /**
+         * Manifest V3 Service Worker。
+         */
+        background: resolve(
+          import.meta.dirname,
+          'src/background.ts',
+        ),
+
+        /**
+         * WebNote 独立 Markdown 预览页面。
+         *
+         * Vite 支持将多个 HTML 页面作为构建入口。
+         */
+        preview: resolve(
+          import.meta.dirname,
+          'preview.html',
+        ),
       },
 
       output: {

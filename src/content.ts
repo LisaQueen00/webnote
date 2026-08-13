@@ -16,6 +16,8 @@ import {
 
 import type { StoredNote } from './types/note'
 
+import {exportCurrentPageMarkdown,} from './export/exportPageNotes'
+
 console.log('WebNote content script loaded!')
 /**
  * Content Script 启动以后，
@@ -39,29 +41,74 @@ function findAnchorById(anchorId: string): HTMLElement | null {
 }
 
 /**
- * 接收 background.ts 发来的消息。
+ * 接收来自 background.ts 的命令。
  *
- * 用户每点击一次浏览器工具栏里的 WebNote 图标，
- * background.ts 就会发送 WEBNOTE_TOGGLE。
+ * 当前支持：
+ *
+ * WEBNOTE_TOGGLE
+ * → 切换笔记选择模式
+ *
+ * WEBNOTE_PREVIEW_REQUEST
+ * → 生成当前页面完整 Markdown 并打开预览
  */
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type !== 'WEBNOTE_TOGGLE') return
+  /**
+   * ------------------------------
+   * WebNote ON / OFF
+   * ------------------------------
+   */
+  if (message.type === 'WEBNOTE_TOGGLE') {
+    isActive = !isActive
 
-  // 切换 WebNote 的激活状态。
-  isActive = !isActive
+    console.log(
+      `WebNote is now ${isActive ? 'ON' : 'OFF'}`,
+    )
 
-  console.log(`WebNote is now ${isActive ? 'ON' : 'OFF'}`)
+    if (!isActive) {
+      hideHighlight()
+    }
+
+    return
+  }
 
   /**
-   * 关闭 WebNote 时立即隐藏高亮。
-   *
-   * 这样用户点击图标关闭以后，
-   * 页面会马上恢复到普通浏览状态。
+   * ------------------------------
+   * Markdown Preview
+   * ------------------------------
    */
-  if (!isActive) {
-    hideHighlight()
+  if (message.type === 'WEBNOTE_PREVIEW_REQUEST') {
+    /**
+     * 导出过程需要读取 storage 和当前 DOM，
+     * 因此是异步操作。
+     */
+    void preparePreview()
   }
 })
+
+/**
+ * 为当前网页生成最终 Markdown，
+ * 再交给 background 打开预览页面。
+ */
+async function preparePreview(): Promise<void> {
+  const markdown =
+    await exportCurrentPageMarkdown()
+
+  /**
+   * 将最终结果交给 background。
+   *
+   * 注意这里传的是已经合并好的最终 Markdown，
+   * preview 页面不再重新参与任何笔记排序或转换。
+   */
+  await chrome.runtime.sendMessage({
+    type: 'WEBNOTE_OPEN_PREVIEW',
+
+    payload: {
+      title: document.title,
+      url: location.href,
+      markdown,
+    },
+  })
+}
 
 /**
  * 鼠标移动时预览当前 anchor。
